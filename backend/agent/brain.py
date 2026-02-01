@@ -1,93 +1,98 @@
-from openai import OpenAI
-import json
-from agent.db import load_memory
+from agent.matcher import (
+    find_best_answer,
+    DOCUMENT_QA_STORE,
+    DOCUMENT_UPLOAD_COUNT
+)
 
-client = OpenAI()
 
-def think_and_plan(user_input, agent_type, session_id):
-    # -----------------------------
-    # 1. Load per-user memory from DB
-    # -----------------------------
-    past_memory = load_memory(session_id)
+def generate_general_response(user_input: str, agent_type: str) -> str:
+    """
+    Safe, non-hallucinating, general responses when no documents exist.
+    """
+    text = user_input.lower()
 
-    memory_block = ""
-    if past_memory:
-        memory_block = "Previous interactions I remember:\n"
-        for i, (a_type, msg) in enumerate(past_memory, 1):
-            memory_block += f"{i}. ({a_type}) {msg}\n"
+    if any(word in text for word in ["hi", "hello", "help"]):
+        return (
+            "Hi! 👋 Yes, I can help you.\n\n"
+            "You can ask me questions or upload documents "
+            "so I can answer specifically based on them."
+        )
 
-    # -----------------------------
-    # 2. Build prompt with memory
-    # -----------------------------
-    prompt = f"""
-You are an AI {agent_type} agent.
+    if "service" in text:
+        return (
+            "I can help explain services, workflows, or ideas.\n\n"
+            "If you upload documents, I’ll answer strictly based on them."
+        )
 
-{memory_block}
+    if "how" in text or "what" in text:
+        return (
+            "That’s a good question 👍\n\n"
+            "I can give general guidance, or you can upload documents "
+            "for document-based answers."
+        )
 
-Current user message:
-\"\"\"{user_input}\"\"\"
-
-Your task:
-- Understand the input
-- Use previous interactions if relevant
-- Explain your thinking in clear, human-friendly steps
-- Decide an action
-- Estimate confidence
-- Decide if human help is needed
-
-Return ONLY valid JSON in this exact format:
-
-{{
-  "issue_type": "string",
-  "thinking_steps": ["step 1", "step 2", "step 3"],
-  "action": "string",
-  "confidence": 0.0,
-  "human_needed": false,
-  "explanation": "short explanation that mentions memory if relevant"
-}}
-
-IMPORTANT:
-- No markdown
-- No commentary
-- JSON only
-"""
-
-    # -----------------------------
-    # 3. Call OpenAI
-    # -----------------------------
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You must return valid JSON only."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2
+    return (
+        "I’m here to help 🙂\n\n"
+        "You can ask a question or upload documents "
+        "to get precise answers."
     )
 
-    raw_output = response.choices[0].message.content.strip()
 
-    # 🔍 DEBUG LOG
-    print("\n----- RAW LLM OUTPUT -----")
-    print(raw_output)
-    print("--------------------------\n")
+def think_and_plan(user_input: str, agent_type: str, session_id: str):
 
-    # -----------------------------
-    # 4. Parse safely
-    # -----------------------------
-    try:
-        result = json.loads(raw_output)
-    except Exception:
-        result = {
-            "issue_type": "unknown",
+    user_input = user_input.strip()
+
+    # -------------------------------------
+    # CASE 1: NO DOCUMENTS UPLOADED (REAL CHECK)
+    # -------------------------------------
+    if DOCUMENT_UPLOAD_COUNT.get(session_id, 0) == 0:
+        return {
             "thinking_steps": [
-                "Received input",
-                "Reviewed previous interactions",
-                "Model returned invalid format"
+                "Read user question",
+                "No documents uploaded in this session",
+                "Generated general helpful response"
             ],
-            "action": "Escalated to human agent",
-            "confidence": 0.0,
-            "human_needed": True,
-            "explanation": "The AI could not return a valid structured response."
+            "action": "Answered without documents",
+            "confidence": 0.60,
+            "human_needed": False,
+            "explanation": generate_general_response(
+                user_input, agent_type
+            )
         }
 
-    return result
+    # -------------------------------------
+    # CASE 2: DOCUMENTS EXIST → MATCHER
+    # -------------------------------------
+    match, score = find_best_answer(session_id, user_input)
+
+    if match:
+        return {
+            "thinking_steps": [
+                "Read user question",
+                "Searched uploaded documents",
+                "Compared question with document questions and answers",
+                "Selected best matching answer"
+            ],
+            "action": "Answered using uploaded documents",
+            "confidence": score,
+            "human_needed": False,
+            "explanation": match["answer"]
+        }
+
+    # -------------------------------------
+    # CASE 3: DOCUMENTS EXIST BUT NO MATCH
+    # -------------------------------------
+    return {
+        "thinking_steps": [
+            "Read user question",
+            "Searched uploaded documents",
+            "No strong match found"
+        ],
+        "action": "Escalated to human agent",
+        "confidence": 0.0,
+        "human_needed": True,
+        "explanation": (
+            "I couldn’t find a relevant answer in the uploaded documents.\n\n"
+            "Please rephrase your question or upload more documents."
+        )
+    }

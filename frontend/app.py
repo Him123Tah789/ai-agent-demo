@@ -40,10 +40,37 @@ with col1:
         ]
     )
 
+    # -----------------------------
+    # Document Upload (NEW)
+    # -----------------------------
+    uploaded_files = st.file_uploader(
+        "📂 Upload documents (PDF)",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+
+    if uploaded_files:
+        with st.spinner("Uploading documents..."):
+            response = requests.post(
+                "http://localhost:8000/upload-documents",
+                files=[
+                    ("files", (file.name, file, "application/pdf"))
+                    for file in uploaded_files
+                ],
+                data={"session_id": st.session_state.session_id}
+            )
+
+        if response.status_code == 200:
+            st.success("Documents uploaded successfully")
+        else:
+            st.error("Failed to upload documents")
+
+    st.divider()
+
     user_input = st.text_area(
         "Paste message / content here",
         height=200,
-        placeholder="Example: My order has not arrived and I am very unhappy."
+        placeholder="Ask a question based on uploaded documents"
     )
 
     run_button = st.button("🚀 Run AI Agent")
@@ -80,7 +107,7 @@ if run_button:
     output_container.empty()
 
     if not user_input.strip():
-        st.warning("Please provide some input.")
+        st.warning("Please provide a question.")
     else:
         try:
             response = requests.post(
@@ -107,10 +134,10 @@ if run_button:
             for step in thinking_steps:
                 rendered_steps.append(f"🧠 {step}")
                 thinking_placeholder.markdown("\n".join(rendered_steps))
-                time.sleep(1)
+                time.sleep(0.8)
 
             # -----------------------------
-            # Show Memory (from backend)
+            # Show Memory
             # -----------------------------
             memory = result.get("memory", [])
 
@@ -123,7 +150,7 @@ if run_button:
                 memory_placeholder.caption("No previous memory yet.")
 
             # -----------------------------
-            # Output
+            # Output (DOCUMENT ANSWER)
             # -----------------------------
             with output_container:
                 st.success("Action Decision")
